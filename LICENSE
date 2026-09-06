@@ -1,0 +1,6 @@
+Apache License 2.0
+
+This repository contains original deployment glue under Apache-2.0 intent.
+Files in reference/ originate from the user's wbc_ballet repository and retain
+that project's applicable licensing. The CRC implementation is derived from
+Unitree's public unitree_ros2 example; see upstream licensing before redistribution.

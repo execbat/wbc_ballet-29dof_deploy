@@ -1,0 +1,26 @@
+cmake_minimum_required(VERSION 3.16)
+project(g1_ballet_onnx_deploy)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+add_compile_options(-Wall -Wextra -Wpedantic -O2)
+
+find_package(ament_cmake REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(unitree_hg REQUIRED)
+find_package(std_msgs REQUIRED)
+
+if(NOT DEFINED ENV{ONNXRUNTIME_ROOT})
+  message(FATAL_ERROR "Set ONNXRUNTIME_ROOT to an extracted ONNX Runtime C/C++ package")
+endif()
+set(ORT_ROOT $ENV{ONNXRUNTIME_ROOT})
+find_path(ONNXRUNTIME_INCLUDE onnxruntime_cxx_api.h PATHS ${ORT_ROOT}/include REQUIRED NO_DEFAULT_PATH)
+find_library(ONNXRUNTIME_LIB onnxruntime PATHS ${ORT_ROOT}/lib ${ORT_ROOT}/lib64 REQUIRED NO_DEFAULT_PATH)
+
+add_executable(g1_ballet_policy_node src/g1_ballet_policy_node.cpp)
+target_include_directories(g1_ballet_policy_node PRIVATE include ${ONNXRUNTIME_INCLUDE})
+target_link_libraries(g1_ballet_policy_node ${ONNXRUNTIME_LIB})
+ament_target_dependencies(g1_ballet_policy_node rclcpp unitree_hg std_msgs)
+
+install(TARGETS g1_ballet_policy_node DESTINATION lib/${PROJECT_NAME})
+install(DIRECTORY config policy docs gamepad scripts reference DESTINATION share/${PROJECT_NAME})
+ament_package()

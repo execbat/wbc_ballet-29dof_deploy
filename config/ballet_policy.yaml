@@ -1,0 +1,19 @@
+g1_ballet_onnx:
+  ros__parameters:
+    policy_path: "policy/policy.onnx"
+    # Unitree ROS2 high-frequency aliases are normally lowstate/lowcmd.
+    # Change these after checking `ros2 topic list` on your robot setup.
+    lowstate_topic: "lowstate"
+    lowcmd_topic: "lowcmd"
+    # Training-compatible GUI/gamepad sends UDP directly here.
+    udp_host: "0.0.0.0"
+    udp_port: 55001
+    enable_topic: "/ballet/enable"
+    control_hz: 50.0
+    ramp_seconds: 3.0
+    state_timeout_s: 0.15
+    command_timeout_s: 0.5
+    max_tilt_rad: 0.65
+    action_clip: 1.0
+    target_limit_margin: 0.98
+    damping_kd: 2.0

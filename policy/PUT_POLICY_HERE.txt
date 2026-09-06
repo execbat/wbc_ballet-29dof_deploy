@@ -1,0 +1,7 @@
+Copy the ONNX exported from the matching latest wbc_ballet training run here as:
+
+  policy/policy.onnx
+
+If export produced external tensor data (for example policy.onnx.data), copy it next to policy.onnx.
+Do not strip ONNX metadata: the runtime verifies joint_names, observation_names,
+default_joint_pos, action_scale, joint_stiffness, and joint_damping before arming.
