@@ -3,7 +3,11 @@
 Deployment repository for running the latest **wbc_ballet G1 29DoF actor (186D)** on a physical Unitree G1 with ONNX Runtime.
 
 This version uses the **same custom 29-axis gamepad/GUI and UDP protocol as the training repository**. The Unitree stock wireless remote is not used as the policy command source.
+
+
 Link to training repository: [wbc_ballet-29dof](https://github.com/execbat/wbc_ballet-29dof)
+
+
 
 ## Runtime architecture
 
