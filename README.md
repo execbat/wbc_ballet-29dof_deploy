@@ -81,7 +81,6 @@ The latest actor is **186D**:
 | 10 | `axis_mask`              | 29 | gamepad mask |
 |    | **TOTAL**                | 186|              |
 
-`base_lin_vel` is **not** an actor observation. It is critic-only in the current training repository.
 
 ---
 
