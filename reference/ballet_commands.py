@@ -79,6 +79,10 @@ class BalletCommand(CommandTerm):
         low = torch.tensor(self.cfg.velocity_ranges[0], device=self.device)
         high = torch.tensor(self.cfg.velocity_ranges[1], device=self.device)
         self._command[env_ids, 0:3] = low + torch.rand(count, 3, device=self.device) * (high - low)
+        # Explicit stationary and turn-in-place training samples.
+        draw = torch.rand(count, device=self.device)
+        self._command[env_ids[draw < 0.20], :3] = 0.0
+        self._command[env_ids[(draw >= 0.20) & (draw < 0.45)], :2] = 0.0
 
     def _update_command(self) -> None:
         pass
@@ -93,8 +97,8 @@ class BalletCommandCfg(CommandTermCfg):
     target_limit: float = 0.8
     mask_probability: float = 0.15
     velocity_ranges: tuple[tuple[float, float, float], tuple[float, float, float]] = (
-        (0.0, 0.0, -1.0),
-        (1.0, 0.0, 1.0),
+        (-1.0, -1.0, -1.0),
+        (1.0, 1.0, 1.0),
     )
 
     def build(self, env: ManagerBasedRlEnv) -> BalletCommand:
@@ -130,3 +134,4 @@ class UdpBalletCommandCfg(BalletCommandCfg):
 
     def build(self, env: ManagerBasedRlEnv) -> UdpBalletCommand:
         return UdpBalletCommand(self, env)
+

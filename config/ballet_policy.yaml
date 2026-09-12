@@ -1,19 +1,40 @@
 g1_ballet_onnx:
   ros__parameters:
+    # Prefer an absolute path when launching from an installed ROS2 workspace.
     policy_path: "policy/policy.onnx"
-    # Unitree ROS2 high-frequency aliases are normally lowstate/lowcmd.
-    # Change these after checking `ros2 topic list` on your robot setup.
-    lowstate_topic: "lowstate"
-    lowcmd_topic: "lowcmd"
-    # Training-compatible GUI/gamepad sends UDP directly here.
+
+    # Official Unitree ROS2 low-level topics.
+    lowstate_topic: "/lowstate"
+    lowcmd_topic: "/lowcmd"
+
+    # game_emulator_run_v1.py wire protocol: 61 little-endian float32 values
+    # [targets(29), mask(29), velocity(vx, vy, yaw)(3)] on UDP 55001.
     udp_host: "0.0.0.0"
     udp_port: 55001
     enable_topic: "/ballet/enable"
-    control_hz: 50.0
+
+    # Training dt = sim.dt(0.005) * decimation(4) = 0.020 s = 50 Hz.
+    policy_hz: 50.0
+    # Hold/publish the latest policy target at Unitree's high-frequency 2 ms cadence.
+    lowcmd_hz: 500.0
+
     ramp_seconds: 3.0
     state_timeout_s: 0.15
     command_timeout_s: 0.5
     max_tilt_rad: 0.65
-    action_clip: 1.0
+
+    # IMPORTANT: training does not configure RSL-RL clip_actions.
+    # 0.0 therefore means "do not alter actor output". A positive value enables
+    # an optional deployment-only symmetric actor clip.
+    action_clip_abs: 0.0
+
+    # Independent hard mechanical target guard applied after default_q + scale*action.
     target_limit_margin: 0.98
     damping_kd: 2.0
+    ramp_gain_scale: 0.5
+    policy_gain_scale: 1.0
+
+    # unitrree_g1_deployment's G1-29DoF controller explicitly requires 5.
+    # Set -1 only if you intentionally need to disable this compatibility check.
+    required_mode_machine: 5
+    reject_other_lowcmd_publishers: true

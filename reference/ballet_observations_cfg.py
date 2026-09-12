@@ -6,7 +6,7 @@ from mjlab.managers.scene_entity_config import SceneEntityCfg
 from mjlab.tasks.velocity import mdp
 from mjlab.utils.noise import UniformNoiseCfg as Unoise
 
-from wbc_ballet import mdp as ballet_mdp
+from wbc_ballet.tasks.ballet import mdp as ballet_mdp
 from wbc_ballet.robots.g1.constants import (
     G1_IMU_ANG_VEL_SENSOR,
     G1_IMU_LIN_ACC_SENSOR,
@@ -20,10 +20,16 @@ _TERRAIN_SCAN_MAX_DISTANCE = 5.0
 
 @configclass
 class BalletPolicyCfg(ObsGroup):
-    # Deployable pelvis IMU signals available from Unitree rt/lowstate.
-    # The actor deliberately does not use base linear velocity because
-    # rt/lowstate does not provide it directly.
-    imu_gyro: ObsTerm | None = ObsTerm(
+    # Pelvis-mounted IMU signals. Gyro and velocimeter were already present;
+    # the physical accelerometer channel is added explicitly.
+    
+#    base_lin_vel: ObsTerm | None = ObsTerm( NOT POSSIBLE TO GRASP FROM ROS2 TOPICS ON THE ROBOT
+#        func=mdp.builtin_sensor,
+#        params={"sensor_name": G1_IMU_LIN_VEL_SENSOR},
+#        noise=Unoise(n_min=-0.1, n_max=0.1),
+#    )
+
+    base_ang_vel: ObsTerm | None = ObsTerm(
         func=mdp.builtin_sensor,
         params={"sensor_name": G1_IMU_ANG_VEL_SENSOR},
         noise=Unoise(n_min=-0.2, n_max=0.2),
@@ -67,12 +73,14 @@ class BalletPolicyCfg(ObsGroup):
 
 @configclass
 class BalletCriticCfg(BalletPolicyCfg):
-    # Privileged simulation-only signals. They are intentionally unavailable
-    # to the actor/deployed policy.
+    # Privileged observation: computed from the full simulated articulated-body state.
+    # It is intentionally unavailable to the actor/deployed policy.
+    
     base_lin_vel: ObsTerm | None = ObsTerm(
         func=mdp.builtin_sensor,
         params={"sensor_name": G1_IMU_LIN_VEL_SENSOR},
-    )
+        noise=Unoise(n_min=-0.1, n_max=0.1),
+    )    
     whole_body_com_xy: ObsTerm | None = ObsTerm(func=ballet_mdp.whole_body_com_xy_b)
     support_center_xy: ObsTerm | None = ObsTerm(
         func=ballet_mdp.support_center_xy_b,

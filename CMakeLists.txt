@@ -8,6 +8,7 @@ find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(unitree_hg REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(Threads REQUIRED)
 
 if(NOT DEFINED ENV{ONNXRUNTIME_ROOT})
   message(FATAL_ERROR "Set ONNXRUNTIME_ROOT to an extracted ONNX Runtime C/C++ package")
@@ -18,7 +19,7 @@ find_library(ONNXRUNTIME_LIB onnxruntime PATHS ${ORT_ROOT}/lib ${ORT_ROOT}/lib64
 
 add_executable(g1_ballet_policy_node src/g1_ballet_policy_node.cpp)
 target_include_directories(g1_ballet_policy_node PRIVATE include ${ONNXRUNTIME_INCLUDE})
-target_link_libraries(g1_ballet_policy_node ${ONNXRUNTIME_LIB})
+target_link_libraries(g1_ballet_policy_node ${ONNXRUNTIME_LIB} Threads::Threads)
 ament_target_dependencies(g1_ballet_policy_node rclcpp unitree_hg std_msgs)
 
 install(TARGETS g1_ballet_policy_node DESTINATION lib/${PROJECT_NAME})
