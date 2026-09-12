@@ -36,8 +36,8 @@ policy/policy.onnx
 On the robot:
 
 ```bash
-cd <PATH_TO_THIS_REPOSITORY>
-git pull --ff-only
+git clone git@github.com:execbat/wbc_ballet-29dof_deploy.git
+cd wbc_ballet-29dof_deploy
 ./scripts/run_policy_on_robot.sh --arm
 ```
 
