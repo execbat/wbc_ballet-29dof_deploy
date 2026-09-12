@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
   <name>g1_ballet_onnx_deploy</name>
-  <version>0.2.0</version>
+  <version>0.3.0</version>
   <description>ROS 2 low-level ONNX deployment runtime for wbc_ballet G1 29DoF.</description>
   <maintainer email="noreply@example.com">wbc_ballet deployment</maintainer>
   <license>Apache-2.0</license>

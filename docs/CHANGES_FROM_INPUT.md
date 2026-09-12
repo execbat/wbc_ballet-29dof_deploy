@@ -31,3 +31,11 @@ Main corrections:
 This repository has been statically validated in the build environment, but it
 has **not** been compiled against your robot's exact ROS2/Unitree installation or
 run on physical hardware here.
+
+## Automated robot launcher and repository-contained policy
+
+- Added `scripts/run_policy_on_robot.sh` as the recommended robot entry point.
+- The launcher detects/sources ROS2 and the environment that provides `unitree_hg`, installs basic build tooling when possible, finds/downloads ONNX Runtime 1.23.2, validates the BALLET source and ONNX ABI, builds in `~/.cache/wbc_ballet_deploy/ros_ws`, checks `/lowstate`, `mode_machine`, `/lowcmd` ownership and UDP port 55001, then starts the policy node.
+- `--arm` additionally requires a live valid `game_emulator_run_v1.py` packet before launch and publishes `/ballet/enable=true` only after `/g1_ballet_onnx` appears.
+- `policy/policy.onnx` and optional `policy/policy.onnx.data` are now explicitly allowed in Git so normal robot deployment is `git pull --ff-only` followed by the launcher.
+- Root `README.md` is now the short operational path; `README_DETAILED.md` contains the long manual procedure and diagnostics.

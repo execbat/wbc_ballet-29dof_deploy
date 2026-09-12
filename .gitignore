@@ -1,6 +1,14 @@
 build/
 install/
 log/
+*.bag
+
+# Local launcher/build caches if someone overrides BALLET_RUNTIME_CACHE into the repo.
+.runtime/
+
+# The deployment policy is intentionally versioned with this repository so the
+# robot only needs git pull. Other ad-hoc ONNX exports remain ignored.
 policy/*.onnx
 policy/*.onnx.data
-*.bag
+!policy/policy.onnx
+!policy/policy.onnx.data

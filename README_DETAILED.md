@@ -1,0 +1,1027 @@
+# Unitree G1 29DoF — WBC BALLET ONNX deployment
+
+ROS 2 low-level runtime for running the trained **BALLET** policy from
+[`execbat/wbc_ballet-29dof`](https://github.com/execbat/wbc_ballet-29dof) on a physical Unitree G1 29DoF in debug / low-level control mode.
+
+This repository is specifically for **BALLET**, not `flip`.
+
+Command source:
+
+```text
+gamepad/game_emulator_run_v1.py
+```
+
+Do not use `game_emulator_run_v2.py` for this task.
+
+## Recommended automated robot launcher
+
+For normal operation, the manual setup steps below are performed automatically by:
+
+```bash
+git pull --ff-only
+./scripts/run_policy_on_robot.sh --arm
+```
+
+The launcher discovers `<ROS_DISTRO>` and `<UNITREE_ROS2_WORKSPACE>`/prefix, sources them, prepares dependencies, validates the committed ONNX, builds, checks `/lowstate`, `/lowcmd`, `mode_machine`, the v1 UDP stream, and then starts the node. Use the remaining sections as the detailed/manual equivalent and troubleshooting reference.
+
+
+For the full signal-by-signal transport description, read:
+
+```text
+docs/END_TO_END_DATA_FLOW.md
+```
+
+---
+
+# 1. What talks to what
+
+```text
+CONTROL LAPTOP / PC                                      UNITREE G1 / ROBOT COMPUTER
+
+ gamepad/game_emulator_run_v1.py
+        |
+        | UDP 50 Hz, port 55001
+        | [targets29, mask29, velocity3]
+        v
++--------------------------------------------------------------------------------+
+|                        g1_ballet_policy_node                                    |
+|                                                                                |
+|  SUB /lowstate [unitree_hg/msg/LowState]                                       |
+|       |                                                                        |
+|       +-- imu_state.gyroscope                                                  |
+|       +-- imu_state.accelerometer                                              |
+|       +-- imu_state.quaternion                                                 |
+|       +-- motor_state[0..28].q / dq                                            |
+|                                                                                |
+|  UDP :55001 <- game_emulator_run_v1.py                                         |
+|                                                                                |
+|             -> exact 186D observation -> ONNX -> action[29]                    |
+|                                                                                |
+|  q_des[i] = default_q[i] + action_scale[i] * action[i]                         |
+|                                                                                |
+|  PUB /lowcmd [unitree_hg/msg/LowCmd]                                           |
+|       motor_cmd[0..28].q = q_des[0..28]                                        |
++--------------------------------------------------------------------------------+
+        |
+        v
+Unitree G1 low-level motor controller
+```
+
+ROS 2 robot I/O:
+
+```text
+SUBSCRIBE  /lowstate       unitree_hg/msg/LowState
+PUBLISH    /lowcmd         unitree_hg/msg/LowCmd
+SUBSCRIBE  /ballet/enable  std_msgs/msg/Bool
+```
+
+Non-ROS command I/O:
+
+```text
+UDP :55001 <- game_emulator_run_v1.py
+```
+
+Policy rate:
+
+```text
+50 Hz
+```
+
+Low-level `/lowcmd` publication rate:
+
+```text
+500 Hz
+```
+
+---
+
+# 2. Important safety assumptions before touching the robot
+
+This package publishes **low-level joint commands**. For the first real-hardware test:
+
+1. Suspend/support the G1 so a bad command cannot make it fall.
+2. Keep the physical emergency stop / safety controls immediately available.
+3. Put the robot into the Unitree debug/low-level-control state required by your robot software image.
+4. Stop the normal onboard motion controller before allowing this package to control `/lowcmd`.
+5. Confirm that the robot exposes the expected `/lowstate` stream.
+6. Confirm `mode_machine == 5` for the 29DoF robot before arming.
+7. Start with the game emulator neutral: all axis masks off, `vx=vy=yaw=0`.
+8. Do not bypass a failed ONNX ABI check.
+
+The exact Unitree command/service used to enter debug mode or stop the stock motion service is firmware/image dependent and is intentionally not guessed in this repository. Use the same low-level/debug procedure that is already known to work on your G1 image. The deploy node then adds its own checks on top of that.
+
+---
+
+# 3. Repository layout: what must live where
+
+Recommended robot workspace:
+
+```text
+~/g1_ballet_ws/
+├── src/
+│   └── wbc_ballet-29dof_deploy/
+│       ├── CMakeLists.txt
+│       ├── package.xml
+│       ├── config/
+│       │   └── ballet_policy.yaml
+│       ├── docs/
+│       │   └── END_TO_END_DATA_FLOW.md
+│       ├── gamepad/
+│       │   └── game_emulator_run_v1.py
+│       ├── policy/
+│       │   ├── PUT_POLICY_HERE.txt
+│       │   └── policy.onnx          <-- YOUR EXPORTED BALLET POLICY
+│       ├── scripts/
+│       │   ├── check_contract.py
+│       │   ├── check_io_contract.py
+│       │   ├── check_onnx.py
+│       │   └── inspect_gamepad_udp.py
+│       └── src/
+│           └── g1_ballet_policy_node.cpp
+├── build/                            <-- generated by colcon
+├── install/                          <-- generated by colcon
+└── log/                              <-- generated by colcon
+```
+
+The ROS package name is:
+
+```text
+g1_ballet_onnx_deploy
+```
+
+The executable is:
+
+```text
+g1_ballet_policy_node
+```
+
+The ROS node name is:
+
+```text
+/g1_ballet_onnx
+```
+
+The production ONNX is expected at `policy/policy.onnx` and is intentionally versioned with this repository. A normal `git pull --ff-only` therefore updates code and the robot-ready policy together.
+
+---
+
+# 4. Export the BALLET ONNX from the training repository
+
+On the training machine, from `wbc_ballet-29dof`:
+
+```bash
+uv run python scripts/export.py \
+  Mjlab-Ballet-Flat-Unitree-G1-29DoF \
+  --checkpoint-file ./logs/rsl_rl/g1_29dof_ballet/<run>/model_<N>.pt \
+  --onnx-file g1_29dof_wbc_ballet.onnx
+```
+
+The deploy runtime expects:
+
+```text
+actor input  = 186
+actor output = 29
+```
+
+The exact actor observation terms are:
+
+```text
+base_ang_vel             3
+imu_lin_acc              3
+projected_gravity        3
+velocity_commands        3
+joint_pos               29
+joint_vel               29
+actions                 29
+axis_actual_normalized  29
+axis_target_normalized  29
+axis_mask               29
+---------------------------
+TOTAL                  186
+```
+
+Before copying the model to the robot, validate it from this deploy repository:
+
+```bash
+python3 -m pip install --user onnx
+python3 scripts/check_onnx.py /path/to/g1_29dof_wbc_ballet.onnx
+```
+
+Expected final line:
+
+```text
+PASS: BALLET ONNX contract is compatible with this deploy runtime
+```
+
+If the check fails, do **not** use that ONNX on the robot.
+
+---
+
+# 5. Connect to the G1 computer
+
+The commands below assume the policy node runs on the G1 onboard computer.
+
+First connect your laptop/control PC to the same network as that computer.
+
+Use the actual robot-computer username and IP for your installation:
+
+```bash
+ssh <ROBOT_USER>@<ROBOT_IP>
+```
+
+Example form only:
+
+```text
+ssh user@192.168.x.x
+```
+
+Do not copy an example IP blindly.
+
+Once connected, inspect the robot computer network addresses:
+
+```bash
+hostname
+ip -br addr
+```
+
+Remember the IP address that is reachable from the laptop. You will later use this exact address as:
+
+```text
+BALLET_ROBOT_IP
+```
+
+Verify architecture:
+
+```bash
+uname -m
+```
+
+On the common G1 onboard ARM computer this may be `aarch64`; use an ONNX Runtime C/C++ build matching whatever this command actually reports.
+
+---
+
+# 6. Clone the deployment repository on the robot
+
+Repository:
+
+```text
+https://github.com/execbat/wbc_ballet-29dof_deploy.git
+```
+
+First installation:
+
+```bash
+mkdir -p ~/g1_ballet_ws/src
+cd ~/g1_ballet_ws/src
+
+git clone https://github.com/execbat/wbc_ballet-29dof_deploy.git
+cd wbc_ballet-29dof_deploy
+```
+
+Confirm branch/status:
+
+```bash
+git branch --show-current
+git status --short
+```
+
+For later updates:
+
+```bash
+cd ~/g1_ballet_ws/src/wbc_ballet-29dof_deploy
+git status --short
+git pull --ff-only origin main
+```
+
+If you have local source-code edits, resolve/stash them intentionally before pulling. Do not use a destructive `git reset --hard` without understanding what it will remove.
+
+`policy/policy.onnx` is intentionally versioned in Git. A normal `git pull --ff-only` updates the deployment code and the production policy together.
+
+---
+
+# 7. Production ONNX in the deployment repository
+
+The normal deployment workflow assumes the exported production model has already been committed as:
+
+```text
+policy/policy.onnx
+```
+
+If the exporter creates external tensor data, commit `policy/policy.onnx.data` beside it. On the robot no `scp` step is required; `git pull --ff-only` updates both code and policy.
+
+The automated launcher validates the model before launch:
+
+```bash
+./scripts/run_policy_on_robot.sh --check-only
+```
+
+---
+
+# 8. Source ROS 2 and the Unitree message workspace
+
+The package needs:
+
+```text
+rclcpp
+std_msgs
+unitree_hg
+```
+
+In every robot terminal used to build or run, source ROS 2 first:
+
+```bash
+source /opt/ros/<ROS_DISTRO>/setup.bash
+```
+
+Then source the Unitree ROS 2 workspace that provides `unitree_hg` on your robot image, for example:
+
+```bash
+source <UNITREE_ROS2_WORKSPACE>/install/setup.bash
+```
+
+The exact path depends on how ROS 2 / Unitree packages were installed on that G1.
+
+Verify that the package is visible:
+
+```bash
+ros2 pkg prefix unitree_hg
+```
+
+If that command says the package cannot be found, stop here and fix/source the Unitree ROS 2 environment before building this repository.
+
+Also verify that the ROS graph can see the robot:
+
+```bash
+ros2 topic list | grep -E '(^|/)lowstate$|(^|/)lowcmd$'
+```
+
+The deploy defaults are absolute names:
+
+```text
+/lowstate
+/lowcmd
+```
+
+If `/lowstate` does not appear, this is a DDS/network/environment problem, not an ONNX problem. Do not arm until `/lowstate` works.
+
+---
+
+# 9. Install / point CMake to ONNX Runtime C++
+
+The C++ package requires an extracted ONNX Runtime distribution containing at least:
+
+```text
+<ONNXRUNTIME_ROOT>/include/onnxruntime_cxx_api.h
+<ONNXRUNTIME_ROOT>/lib/libonnxruntime.so
+```
+
+or a `lib64` equivalent.
+
+Choose a distribution matching the robot CPU architecture from:
+
+```bash
+uname -m
+```
+
+For example, if you place it under:
+
+```text
+~/third_party/onnxruntime
+```
+
+set:
+
+```bash
+export ONNXRUNTIME_ROOT=$HOME/third_party/onnxruntime
+```
+
+Verify:
+
+```bash
+test -f "$ONNXRUNTIME_ROOT/include/onnxruntime_cxx_api.h" && echo "ORT headers OK"
+find "$ONNXRUNTIME_ROOT" -maxdepth 2 -name 'libonnxruntime.so*' -print
+```
+
+For runtime linking, also make the library directory visible:
+
+```bash
+export LD_LIBRARY_PATH="$ONNXRUNTIME_ROOT/lib:$ONNXRUNTIME_ROOT/lib64:${LD_LIBRARY_PATH:-}"
+```
+
+Use the same `ONNXRUNTIME_ROOT` when rebuilding after a pull.
+
+---
+
+# 10. Build on the robot
+
+Open a robot SSH terminal and source the required environments as described above.
+
+Then:
+
+```bash
+cd ~/g1_ballet_ws
+
+export ONNXRUNTIME_ROOT=$HOME/third_party/onnxruntime
+export LD_LIBRARY_PATH="$ONNXRUNTIME_ROOT/lib:$ONNXRUNTIME_ROOT/lib64:${LD_LIBRARY_PATH:-}"
+
+colcon build \
+  --packages-select g1_ballet_onnx_deploy \
+  --symlink-install
+```
+
+After a successful build:
+
+```bash
+source ~/g1_ballet_ws/install/setup.bash
+```
+
+Verify:
+
+```bash
+ros2 pkg prefix g1_ballet_onnx_deploy
+ros2 pkg executables g1_ballet_onnx_deploy
+```
+
+Expected executable:
+
+```text
+g1_ballet_onnx_deploy g1_ballet_policy_node
+```
+
+After pulling CMake/package changes, if an incremental build behaves strangely, use:
+
+```bash
+cd ~/g1_ballet_ws
+colcon build \
+  --packages-select g1_ballet_onnx_deploy \
+  --symlink-install \
+  --cmake-clean-cache
+```
+
+---
+
+# 11. Run repository checks before hardware control
+
+From the source repository:
+
+```bash
+cd ~/g1_ballet_ws/src/wbc_ballet-29dof_deploy
+
+python3 scripts/check_contract.py
+python3 scripts/check_io_contract.py
+python3 scripts/check_onnx.py policy/policy.onnx
+```
+
+All checks must pass.
+
+The most important transport contract is:
+
+```text
+/lowstate [unitree_hg/msg/LowState]
+       -> 186D observation
+       -> ONNX action[29]
+       -> motor_cmd[0..28].q
+       -> /lowcmd [unitree_hg/msg/LowCmd]
+```
+
+---
+
+# 12. Check live Unitree ROS 2 topics before starting the policy node
+
+Still on the robot computer:
+
+```bash
+ros2 topic info /lowstate -v
+ros2 topic hz /lowstate
+ros2 topic echo --once /lowstate
+```
+
+You need to see:
+
+```text
+Type: unitree_hg/msg/LowState
+```
+
+The message must provide valid values for:
+
+```text
+imu_state.gyroscope
+imu_state.accelerometer
+imu_state.quaternion
+imu_state.rpy
+motor_state[0..28].q
+motor_state[0..28].dq
+mode_machine
+```
+
+Check `mode_machine` in a sample message. This deploy expects:
+
+```text
+mode_machine = 5
+```
+
+unless you deliberately change `required_mode_machine` in the config after verifying your robot image.
+
+Before our node starts, inspect `/lowcmd`:
+
+```bash
+ros2 topic info /lowcmd -v
+```
+
+The normal onboard motion controller must not be simultaneously controlling low-level motor commands. The deploy node also rejects another visible ROS 2 `/lowcmd` publisher, but that check is an additional guard, not a replacement for correctly entering Unitree low-level/debug mode.
+
+---
+
+# 13. Verify laptop -> robot UDP before arming motors
+
+This is strongly recommended for the first setup.
+
+## Robot side
+
+Do **not** run the policy node yet. From the repository root:
+
+```bash
+cd ~/g1_ballet_ws/src/wbc_ballet-29dof_deploy
+python3 scripts/inspect_gamepad_udp.py --host 0.0.0.0 --port 55001
+```
+
+This temporarily owns UDP port `55001` and prints/validates the incoming v1 command packets.
+
+## Laptop/control-PC side
+
+Clone/pull the same repository on the laptop if necessary:
+
+```bash
+git clone https://github.com/execbat/wbc_ballet-29dof_deploy.git
+cd wbc_ballet-29dof_deploy
+```
+
+The GUI requires Python, NumPy and Tk. On Debian/Ubuntu-like systems, for example:
+
+```bash
+sudo apt install python3-tk
+python3 -m pip install --user numpy
+```
+
+Check network reachability:
+
+```bash
+ping <ROBOT_IP>
+```
+
+Then configure the game emulator to send to the robot computer:
+
+```bash
+export BALLET_ROBOT_IP=<ROBOT_IP>
+export BALLET_UDP_PORT=55001
+python3 gamepad/game_emulator_run_v1.py
+```
+
+The GUI footer should show:
+
+```text
+UDP target: 50 Hz ... to <ROBOT_IP>:55001
+```
+
+The robot-side inspector should report valid 61-float packets at about 50 Hz.
+
+At GUI startup, keep:
+
+```text
+all joint-axis checkboxes OFF
+Speed X = 0
+Speed Y = 0
+Yaw Z   = 0
+```
+
+Move one control at a time only after confirming the basic stream.
+
+When the UDP test is complete:
+
+1. Stop `inspect_gamepad_udp.py` on the robot with `Ctrl+C`.
+2. Leave or restart `game_emulator_run_v1.py` on the laptop in a neutral state.
+3. Start the actual policy node. Only one process may bind UDP port 55001 on the robot.
+
+---
+
+# 14. Where to run the game emulator
+
+**Recommended: run `game_emulator_run_v1.py` on the laptop/control PC, not on the robot.**
+
+Reasons:
+
+- it is a Tk GUI and needs a graphical desktop;
+- it does not require ROS 2;
+- it only needs IP connectivity to UDP port 55001 on the machine running `g1_ballet_policy_node`;
+- keeping the operator UI off the realtime/control computer is simpler and safer.
+
+The data path is:
+
+```text
+Laptop GUI
+  |
+  | UDP 55001
+  v
+G1 onboard computer: g1_ballet_policy_node
+  |
+  | ROS2 /lowcmd
+  v
+G1 low-level motor controller
+```
+
+If the policy node is ever moved off the robot to another control PC, point `BALLET_ROBOT_IP` to that policy-node computer instead.
+
+---
+
+# 15. Start the policy node on the robot
+
+Open **Robot Terminal A** via SSH.
+
+Source ROS 2, Unitree ROS 2, this workspace, and ONNX Runtime exactly as used during build:
+
+```bash
+source /opt/ros/<ROS_DISTRO>/setup.bash
+source <UNITREE_ROS2_WORKSPACE>/install/setup.bash
+source ~/g1_ballet_ws/install/setup.bash
+
+export ONNXRUNTIME_ROOT=$HOME/third_party/onnxruntime
+export LD_LIBRARY_PATH="$ONNXRUNTIME_ROOT/lib:$ONNXRUNTIME_ROOT/lib64:${LD_LIBRARY_PATH:-}"
+```
+
+Set convenient paths:
+
+```bash
+REPO=$HOME/g1_ballet_ws/src/wbc_ballet-29dof_deploy
+POLICY=$REPO/policy/policy.onnx
+SHARE=$(ros2 pkg prefix --share g1_ballet_onnx_deploy)
+```
+
+Check them:
+
+```bash
+ls -lh "$POLICY"
+ls -lh "$SHARE/config/ballet_policy.yaml"
+```
+
+Start the node:
+
+```bash
+ros2 run g1_ballet_onnx_deploy g1_ballet_policy_node --ros-args \
+  --params-file "$SHARE/config/ballet_policy.yaml" \
+  -p policy_path:="$POLICY"
+```
+
+Important: **starting this process does not arm the policy**.
+
+You should see startup messages describing:
+
+```text
+Loaded ONNX policy and verified ballet 186D/29DoF ABI
+Listening for BALLET game_emulator_run_v1.py UDP on 0.0.0.0:55001
+Robot I/O contract: SUB /lowstate ... PUB /lowcmd ...
+Runtime started: policy 50.0 Hz, lowcmd 500.0 Hz, required_mode_machine=5
+```
+
+If the process exits with an ONNX metadata/shape error, do not bypass it.
+
+---
+
+# 16. Start/confirm the game emulator on the laptop
+
+On the laptop/control PC:
+
+```bash
+cd /path/to/wbc_ballet-29dof_deploy
+
+export BALLET_ROBOT_IP=<ROBOT_IP>
+export BALLET_UDP_PORT=55001
+
+python3 gamepad/game_emulator_run_v1.py
+```
+
+Keep the initial command neutral:
+
+```text
+all 29 axis masks OFF
+vx = 0
+vy = 0
+yaw = 0
+```
+
+The emulator should print a send rate near 50 Hz.
+
+On the robot you can verify the UDP socket is owned by the policy process:
+
+```bash
+ss -lunp | grep ':55001'
+```
+
+---
+
+# 17. Inspect the running ROS graph before enable
+
+Open **Robot Terminal B** and source the same ROS environments:
+
+```bash
+source /opt/ros/<ROS_DISTRO>/setup.bash
+source <UNITREE_ROS2_WORKSPACE>/install/setup.bash
+source ~/g1_ballet_ws/install/setup.bash
+```
+
+Inspect the node:
+
+```bash
+ros2 node info /g1_ballet_onnx
+```
+
+You should see the important endpoints:
+
+```text
+Subscriptions:
+  /lowstate       unitree_hg/msg/LowState
+  /ballet/enable  std_msgs/msg/Bool
+
+Publishers:
+  /lowcmd         unitree_hg/msg/LowCmd
+```
+
+Check rates:
+
+```bash
+ros2 topic hz /lowstate
+ros2 topic hz /lowcmd
+```
+
+`/lowcmd` is expected to be the high-rate stream once the controller has armed at least once; policy inference itself is 50 Hz.
+
+---
+
+# 18. Arm the policy
+
+Only do this with the robot supported/suspended for the first tests and the game emulator sending a fresh neutral packet stream.
+
+From **Robot Terminal B**:
+
+```bash
+ros2 topic pub --once /ballet/enable std_msgs/msg/Bool '{data: true}'
+```
+
+The controller does not immediately jump into actor output.
+
+Expected state sequence:
+
+```text
+IDLE
+  -> 3-second smooth ramp from current measured pose to ONNX default pose
+  -> POLICY ACTIVE
+```
+
+Terminal A should show messages similar to:
+
+```text
+ARMED: ramping current pose -> ONNX default pose for 3.00 s
+POLICY ACTIVE
+```
+
+Only after the ramp and stable supported behavior should you begin testing small game-emulator commands.
+
+---
+
+# 19. What a game-emulator command becomes
+
+`game_emulator_run_v1.py` sends:
+
+```text
+[targets[29], mask[29], vx, vy, yaw]
+```
+
+The deploy node combines that with G1 `LowState` into the exact 186D actor input.
+
+The ONNX returns:
+
+```text
+action[29]
+```
+
+For joint `i`:
+
+```text
+q_raw[i] = default_q[i] + action_scale[i] * action[i]
+q_des[i] = joint-limit-guard(q_raw[i])
+```
+
+Then:
+
+```text
+LowCmd.motor_cmd[i].q = q_des[i]
+```
+
+for `i = 0..28`, and the whole `LowCmd` is published on:
+
+```text
+/lowcmd
+```
+
+There are **not** 29 separate target topics.
+
+Read `docs/END_TO_END_DATA_FLOW.md` for the exact observation offsets and complete mapping.
+
+---
+
+# 20. Disable / stop correctly
+
+Normal disable, from Robot Terminal B:
+
+```bash
+ros2 topic pub --once /ballet/enable std_msgs/msg/Bool '{data: false}'
+```
+
+After the first arm, disable causes the deploy runtime to use its damping output rather than continue policy position targets.
+
+Recommended shutdown order:
+
+1. Publish `/ballet/enable = false`.
+2. Confirm the node reports disabled/idle.
+3. Stop `g1_ballet_policy_node` with `Ctrl+C` in Robot Terminal A.
+4. Stop `game_emulator_run_v1.py` on the laptop.
+5. Return the robot from debug/low-level mode using your normal Unitree procedure.
+
+For an emergency, use the physical robot safety mechanism first. Do not depend on a terminal command as the only emergency stop.
+
+---
+
+# 21. Fail-safe conditions
+
+Active control is cancelled and explicit re-enable is required when the node detects:
+
+- missing/stale `/lowstate`;
+- missing/stale `game_emulator_run_v1.py` UDP;
+- `mode_machine` mismatch;
+- excessive/invalid roll or pitch;
+- another visible `/lowcmd` publisher;
+- NaN/Inf in the observation;
+- NaN/Inf in the actor output;
+- ONNX inference exception.
+
+Default values are in:
+
+```text
+config/ballet_policy.yaml
+```
+
+Important defaults:
+
+```yaml
+lowstate_topic: "/lowstate"
+lowcmd_topic: "/lowcmd"
+udp_host: "0.0.0.0"
+udp_port: 55001
+enable_topic: "/ballet/enable"
+policy_hz: 50.0
+lowcmd_hz: 500.0
+ramp_seconds: 3.0
+state_timeout_s: 0.15
+command_timeout_s: 0.5
+required_mode_machine: 5
+reject_other_lowcmd_publishers: true
+action_clip_abs: 0.0
+```
+
+Do not casually relax these values during first hardware deployment.
+
+---
+
+# 22. Updating the repository on the robot later
+
+On the robot:
+
+```bash
+ssh <ROBOT_USER>@<ROBOT_IP>
+
+source /opt/ros/<ROS_DISTRO>/setup.bash
+source <UNITREE_ROS2_WORKSPACE>/install/setup.bash
+
+cd ~/g1_ballet_ws/src/wbc_ballet-29dof_deploy
+git status --short
+git pull --ff-only origin main
+```
+
+Re-run static checks:
+
+```bash
+python3 scripts/check_contract.py
+python3 scripts/check_io_contract.py
+python3 scripts/check_onnx.py policy/policy.onnx
+```
+
+Rebuild:
+
+```bash
+cd ~/g1_ballet_ws
+export ONNXRUNTIME_ROOT=$HOME/third_party/onnxruntime
+export LD_LIBRARY_PATH="$ONNXRUNTIME_ROOT/lib:$ONNXRUNTIME_ROOT/lib64:${LD_LIBRARY_PATH:-}"
+
+colcon build --packages-select g1_ballet_onnx_deploy --symlink-install
+source install/setup.bash
+```
+
+Then repeat the live `/lowstate`, UDP, and pre-arm checks before running again.
+
+---
+
+# 23. Quick run checklist
+
+Use this only after the full setup has already been validated once.
+
+## On the robot
+
+```bash
+ssh <ROBOT_USER>@<ROBOT_IP>
+
+source /opt/ros/<ROS_DISTRO>/setup.bash
+source <UNITREE_ROS2_WORKSPACE>/install/setup.bash
+source ~/g1_ballet_ws/install/setup.bash
+
+export ONNXRUNTIME_ROOT=$HOME/third_party/onnxruntime
+export LD_LIBRARY_PATH="$ONNXRUNTIME_ROOT/lib:$ONNXRUNTIME_ROOT/lib64:${LD_LIBRARY_PATH:-}"
+
+REPO=$HOME/g1_ballet_ws/src/wbc_ballet-29dof_deploy
+POLICY=$REPO/policy/policy.onnx
+SHARE=$(ros2 pkg prefix --share g1_ballet_onnx_deploy)
+
+ros2 topic echo --once /lowstate
+
+ros2 run g1_ballet_onnx_deploy g1_ballet_policy_node --ros-args \
+  --params-file "$SHARE/config/ballet_policy.yaml" \
+  -p policy_path:="$POLICY"
+```
+
+## On the laptop
+
+```bash
+cd /path/to/wbc_ballet-29dof_deploy
+export BALLET_ROBOT_IP=<ROBOT_IP>
+export BALLET_UDP_PORT=55001
+python3 gamepad/game_emulator_run_v1.py
+```
+
+## In a second robot terminal
+
+```bash
+source /opt/ros/<ROS_DISTRO>/setup.bash
+source <UNITREE_ROS2_WORKSPACE>/install/setup.bash
+source ~/g1_ballet_ws/install/setup.bash
+
+ros2 node info /g1_ballet_onnx
+ros2 topic pub --once /ballet/enable std_msgs/msg/Bool '{data: true}'
+```
+
+Disable:
+
+```bash
+ros2 topic pub --once /ballet/enable std_msgs/msg/Bool '{data: false}'
+```
+
+---
+
+# 24. Source-of-truth files
+
+If something in the stack changes, compare these files first:
+
+```text
+src/g1_ballet_policy_node.cpp
+config/ballet_policy.yaml
+gamepad/game_emulator_run_v1.py
+scripts/check_io_contract.py
+scripts/check_onnx.py
+reference/ballet_actions_cfg.py
+reference/ballet_commands.py
+reference/ballet_commands_cfg.py
+reference/ballet_observations_cfg.py
+reference/ballet_rl_cfg.py
+reference/ballet_udp_protocol.py
+reference/g1_constants.py
+```
+
+Documentation:
+
+```text
+docs/END_TO_END_DATA_FLOW.md       complete signal path and exact 186D offsets
+docs/IO_CONTRACT.md                compact robot I/O contract
+docs/GAMEPAD.md                    v1 UDP protocol
+docs/OBSERVATIONS_FROM_TRAINING.md training observation derivation
+docs/ARCHITECTURE.md               runtime architecture
+docs/VALIDATION.md                 validation notes
+```
+
+The key invariant is always:
+
+```text
+training observation/action ABI
+        ==
+deploy observation/action ABI
+        ==
+gamepad joint order
+        ==
+Unitree motor index order 0..28
+```
